@@ -30,14 +30,6 @@ GPU 可用时，`--device auto` 会自动使用 CUDA；没有 CUDA 时可传入 
 python run_pipeline.py --device auto --seed 42
 ```
 
-快速连通性检查可降低训练轮数与场景数；它仅验证流程，不用于报告论文数值：
-
-```powershell
-python run_pipeline.py --device cpu --baseline-episodes 1 --multiday-episodes 1 --train-scenes 2 --val-scenes 2 --eval-scenes 1
-```
-
-输出结构为 `runs/baseline/`、`runs/multiday_ddpg/`、`runs/clean/`、`runs/dtsr/` 和 `runs/evaluation/`。若只需训练而不评估，添加 `--skip-evaluation`。
-
 ## 论文实验对应代码
 
 - 攻击效果与时序特征：`06_evaluate_120_attacks.py`、`16_profile_attack_temporal_features_seed42.py`。
