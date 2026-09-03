@@ -1,0 +1,27 @@
+{
+  "scenarios": 120,
+  "conditions": [
+    "clean",
+    "opposite_pgd",
+    "opposite_fgsm",
+    "q_function",
+    "electhacker_C",
+    "electhacker_F",
+    "electhacker_O"
+  ],
+  "epsilon": 0.1,
+  "state_scope": "all",
+  "attack_ratio": 1.0,
+  "attack_scope": "obs",
+  "pgd_alpha": 0.01,
+  "pgd_iters": 10,
+  "electhacker_alpha": 0.005,
+  "electhacker_iters": 100,
+  "pairing_rule": "Clean and all attacks use the same vehicle and signal scenario at each episode index.",
+  "plot": {
+    "x_axis": "Test episode / scenario index",
+    "y_axis": "Cumulative reward",
+    "raw_lines": true,
+    "smoothing": false
+  }
+}

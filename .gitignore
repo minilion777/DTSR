@@ -1,0 +1,32 @@
+# Generated training and experiment products
+/runs/
+/models/
+/artifacts/
+/results/
+/tmp/
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+~$*.docx
+
+# ML checkpoints and event logs
+*.pt
+*.pth
+*.ckpt
+events.out.tfevents.*
+
+# Local environments and IDE metadata
+.venv/
+venv/
+.vscode/
+.idea/
+.agents/

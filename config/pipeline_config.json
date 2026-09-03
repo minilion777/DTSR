@@ -1,0 +1,31 @@
+{
+  "baseline_policy": "runs/baseline/actor_baseline_seed42.pt",
+  "baseline_bundle": "runs/baseline/baseline_bundle_seed42.pt",
+  "optional_multiday_ddpg": {
+    "script": "scripts/05_train_multiday_ddpg.py",
+    "recommended_init_mode": "baseline_bundle",
+    "recommended_output": "runs/multiday_ddpg"
+  },
+  "dtsr_pipeline": {
+    "check": "scripts/01_check_existing_ddpg.py",
+    "collect_clean": "scripts/02_collect_multiday_clean.py",
+    "train": "scripts/03_train_multiday_dtsr.py",
+    "evaluate": "scripts/04_evaluate_multiday_dtsr.py"
+  },
+  "attack_120": {
+    "evaluate_and_plot": "scripts/06_evaluate_120_attacks.py",
+    "replot_only": "scripts/07_plot_attack_returns.py",
+    "test_scenarios": 120,
+    "conditions": [
+      "clean",
+      "opposite_pgd",
+      "opposite_fgsm",
+      "q_function",
+      "electhacker_C",
+      "electhacker_F",
+      "electhacker_O"
+    ]
+  },
+  "model_pairing_rule": "actor and bundle must come from the same DDPG checkpoint when Q-function attack is used",
+  "test_pairing_rule": "each episode index uses one fixed vehicle-plus-signal scenario shared by Clean and all attacks"
+}
