@@ -16,10 +16,10 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 DATASET_ROOT = PACKAGE_ROOT / "multiday_dataset"
 MANIFEST_PATH = DATASET_ROOT / "manifests" / "paired_scenario_manifest.csv"
-DEFAULT_ACTOR_PATH = PACKAGE_ROOT / "models" / "baseline" / "actor_baseline_ep50_seed42.pt"
-DEFAULT_BUNDLE_PATH = PACKAGE_ROOT / "models" / "baseline" / "baseline_bundle_ep50_seed42.pt"
-REFERENCE_DATA_PATH = PACKAGE_ROOT / "data" / "data_reference.csv"
-REFERENCE_SIGNAL_PATH = PACKAGE_ROOT / "data" / "signals_reference.json"
+# Generated checkpoints are intentionally not versioned.  These defaults
+# match the output of the scratch-training command in ``run_pipeline.py``.
+DEFAULT_ACTOR_PATH = PACKAGE_ROOT / "runs" / "ddpg" / "actor_multiday_best.pt"
+DEFAULT_BUNDLE_PATH = PACKAGE_ROOT / "runs" / "ddpg" / "bundle_multiday_best.pt"
 
 
 def resolve_device(device_text: str) -> torch.device:

@@ -209,8 +209,8 @@ def main():
     parser.add_argument(
         "--init-mode",
         choices=["baseline_bundle", "baseline_actor", "scratch"],
-        default="baseline_bundle",
-        help="baseline_bundle is recommended for conservative multi-day fine-tuning.",
+        default="scratch",
+        help="scratch is the reproducible default; other modes resume an existing local checkpoint.",
     )
     parser.add_argument("--actor-path", type=Path, default=DEFAULT_ACTOR_PATH)
     parser.add_argument("--bundle-path", type=Path, default=DEFAULT_BUNDLE_PATH)

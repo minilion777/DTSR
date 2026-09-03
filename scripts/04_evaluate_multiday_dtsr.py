@@ -21,7 +21,10 @@ from _common import (
 )
 
 sys.path.insert(0, str(PACKAGE_ROOT))
-from dtsr_multiday_common import REPAIR_MODE
+# The published main method uses full-state DAE repair before DeT, Temporal
+# Shield and UG-BCR routing.  Keeping the constant local avoids depending on
+# the removed seed-specific experiment helper.
+REPAIR_MODE = "full"
 from evc.defense import load_dae, load_detector
 from evc.merged_attacks import PGDStateAttacker
 from evc.merged_core import ChargingEnv, Critic, TRAIN_PROFILE, load_actor_critic_bundle, load_actor_from_path
@@ -43,8 +46,8 @@ def main():
     parser.add_argument("--algorithm", default="opposite_pgd", choices=["opposite_pgd", "q_function"])
     parser.add_argument("--epsilon", type=float, default=0.1)
     parser.add_argument("--state-scope", choices=["local", "all"], default="all")
-    parser.add_argument("--dtsr-dir", type=Path, default=PACKAGE_ROOT / "artifacts" / "dtsr")
-    parser.add_argument("--output", type=Path, default=PACKAGE_ROOT / "results" / "dtsr_evaluation.csv")
+    parser.add_argument("--dtsr-dir", type=Path, default=PACKAGE_ROOT / "runs" / "dtsr")
+    parser.add_argument("--output", type=Path, default=PACKAGE_ROOT / "runs" / "evaluation" / "dtsr_main.csv")
     args = parser.parse_args()
 
     device = resolve_device(args.device)

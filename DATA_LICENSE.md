@@ -19,7 +19,7 @@
 - 配套的 WT/PV、负荷和价格信号为论文流程中的半合成运行信号；
 - `manifests/` 固化了划分与车辆/信号文件配对关系。
 
-因此，仓库可直接复现代码的运行输入，但不宣称可仅凭本仓库重新生成与上游逐记录完全一致的原始会话数据。处理与运行接口见 `multiday_dataset/README_CN.md`、`multiday_dataset/integration/` 和 `scripts/02_collect_multiday_clean.py`。
+因此，仓库可直接复现代码的最小运行输入，但不宣称可仅凭本仓库重新生成与上游逐记录完全一致的原始会话数据。数据读取接口见 `multiday_dataset/README_CN.md` 和 `scripts/02_collect_multiday_clean.py`。
 
 ## 联系方式
 

@@ -23,7 +23,14 @@ from _common import (
 )
 
 sys.path.insert(0, str(PACKAGE_ROOT))
-from cli import merge_pair_bundles_for_unified, posterior_detector_dataset_from_unified_pair
+# These two DTSR dataset builders used to be re-exported by the large CLI
+# entry point.  Importing them from their implementation module keeps this
+# four-module release independent of the removed CLI and its unrelated
+# baselines.
+from evc.dtsr_datasets import (
+    merge_pair_bundles_for_unified,
+    posterior_detector_dataset_from_unified_pair,
+)
 from evc.defense import (
     posterior_detector_probabilities,
     save_dae,
@@ -156,7 +163,7 @@ def main():
     parser.add_argument("--bundle-path", type=Path, default=DEFAULT_BUNDLE_PATH)
     parser.add_argument("--clean-train", type=Path, default=PACKAGE_ROOT / "artifacts" / "clean" / "clean_train.npz")
     parser.add_argument("--clean-val", type=Path, default=PACKAGE_ROOT / "artifacts" / "clean" / "clean_val.npz")
-    parser.add_argument("--output-dir", type=Path, default=PACKAGE_ROOT / "artifacts" / "dtsr")
+    parser.add_argument("--output-dir", type=Path, default=PACKAGE_ROOT / "runs" / "dtsr")
     parser.add_argument("--state-scope", choices=["local", "all"], default="all")
     parser.add_argument("--epsilon", type=float, default=0.1)
     parser.add_argument("--pgd-iters", type=int, default=10)
