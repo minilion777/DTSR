@@ -29,4 +29,4 @@ The pipeline trains DDPG, collects clean trajectories, trains and calibrates the
 
 ## Data source
 
-The scenarios are derived from the official [EV Charge Station Use (September 2018–August 2019)](https://www.arcgis.com/home/item.html?id=ca6cae3df2624832a2eaf678f2eabee8) dataset published by Perth & Kinross Council, together with experiment-specific operating signals. See `DATA_LICENSE.md` for data licensing and attribution information.
+The scenarios are derived from the official [EV Charge Station Use (September 2018–August 2019)](https://www.arcgis.com/home/item.html?id=ca6cae3df2624832a2eaf678f2eabee8) dataset published by Perth & Kinross Council, together with experiment-specific operating signals.
