@@ -18,7 +18,7 @@ def run(command: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train and evaluate DAE + DeT + Temporal Shield + UG-BCR DTSR from scratch."
+        description="Train and evaluate DAE + DeT + Temporal Shield + constraint-gated PD-BCR DTSR from scratch."
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--seed", type=int, default=42)
@@ -55,20 +55,12 @@ def main() -> None:
         "--clean-train", str(clean_dir / "clean_train.npz"),
         "--clean-val", str(clean_dir / "clean_val.npz"), "--output-dir", str(dtsr_dir),
     ])
-    for algorithm in ("opposite_pgd", "q_function"):
-        run([
-            python, "scripts/04_evaluate_multiday_dtsr.py", "--device", args.device,
-            "--actor-path", str(actor), "--bundle-path", str(bundle),
-            "--dtsr-dir", str(dtsr_dir), "--scenes", str(args.eval_scenes),
-            "--algorithm", algorithm,
-            "--output", str(evaluation_dir / f"dtsr_{algorithm}.csv"),
-        ])
     run([
-        python, "scripts/06_evaluate_long_horizon_dtsr.py", "--device", args.device,
+        python, "scripts/04_evaluate_attacks.py", "--device", args.device,
         "--actor-path", str(actor), "--bundle-path", str(bundle),
         "--dtsr-dir", str(dtsr_dir), "--scenes", str(args.eval_scenes),
         "--seed", str(args.seed),
-        "--output", str(evaluation_dir / "dtsr_long_horizon.csv"),
+        "--output", str(evaluation_dir / "dtsr_attacks.csv"),
     ])
 
 

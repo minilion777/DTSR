@@ -35,8 +35,6 @@ DEFAULT_DATA_PATH = DATA_DIR / 'data.csv'
 DEFAULT_SIGNALS_PATH = DATA_DIR / 'signals.json'
 DEFAULT_BASELINE_ACTOR_PATH = MODELS_DIR / 'baseline' / 'actor_baseline_ep50_seed42.pt'
 DEFAULT_BASELINE_BUNDLE_PATH = MODELS_DIR / 'baseline' / 'baseline_bundle_ep50_seed42.pt'
-LEGACY_BASELINE_ACTOR_PATH = MODELS_DIR / 'baseline' / 'actor_baseline_best.pt'
-LEGACY_BASELINE_BUNDLE_PATH = MODELS_DIR / 'baseline' / 'baseline_bundle_best.pt'
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / 'results'
 DEFAULT_EPSILON_LIST = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
 
@@ -45,11 +43,6 @@ ATTACK_ALGORITHMS = (
     'opposite_pgd',
     'opposite_fgsm',
     'q_function',
-    'critic_v',
-    'action',
-    'advpolicy',
-    'pgd',
-    'fgsm',
 )
 ATTACK_SCENARIOS = ('C', 'F', 'O')
 POLICY_MODES = ('baseline',)
@@ -147,12 +140,6 @@ ATTACK_DEFAULTS = {
     'opposite_pgd': AttackDefaults(0.1, 0.01, 10),
     'opposite_fgsm': AttackDefaults(0.1, 0.1, 1),
     'q_function': AttackDefaults(0.1, 0.01, 10),
-    'critic_v': AttackDefaults(0.1, 0.01, 10),
-    'action': AttackDefaults(0.1, 0.01, 10),
-    'advpolicy': AttackDefaults(0.1, 0.01, 1),
-    # Backward-compatible aliases.
-    'pgd': AttackDefaults(0.1, 0.01, 10),
-    'fgsm': AttackDefaults(0.1, 0.1, 1),
 }
 
 
@@ -160,6 +147,7 @@ def canonical_attack_algorithm(algorithm: str) -> str:
     """Normalize user-facing attack names to the paper-aligned family names."""
     token = str(algorithm).strip().lower()
     alias_map = {
+        'electhacker': 'electhacker',
         'pgd': 'opposite_pgd',
         'fgsm': 'opposite_fgsm',
         'opposite_pgd': 'opposite_pgd',
@@ -168,22 +156,6 @@ def canonical_attack_algorithm(algorithm: str) -> str:
         'q-function': 'q_function',
         'q_function_attack': 'q_function',
         'q-function-attack': 'q_function',
-        'critic': 'critic_v',
-        'critic_v': 'critic_v',
-        'critic-v': 'critic_v',
-        'value': 'critic_v',
-        'value_attack': 'critic_v',
-        'value-attack': 'critic_v',
-        'action': 'action',
-        'max_action_diff': 'action',
-        'mad': 'action',
-        'advpolicy': 'advpolicy',
-        'adv_policy': 'advpolicy',
-        'adv-policy': 'advpolicy',
-        'optimal': 'advpolicy',
-        'optimal_attack': 'advpolicy',
-        'optimal-attack': 'advpolicy',
-        'electhacker': 'electhacker',
     }
     if token not in alias_map:
         raise ValueError(f'Unknown attack algorithm: {algorithm}')
@@ -841,9 +813,6 @@ def save_baseline_bundle(agent: DDPGAgent, path: str | Path, *, metadata: dict |
 
 
 def resolve_default_baseline_actor_path() -> Path:
-    for candidate in (DEFAULT_BASELINE_ACTOR_PATH, LEGACY_BASELINE_ACTOR_PATH):
-        if Path(candidate).exists():
-            return Path(candidate)
     return Path(DEFAULT_BASELINE_ACTOR_PATH)
 
 
@@ -872,7 +841,6 @@ def resolve_default_baseline_bundle_path(reward_profile: str | RewardProfile | N
     ordered_candidates: list[Path] = []
     for candidate in (
         Path(DEFAULT_BASELINE_BUNDLE_PATH),
-        Path(LEGACY_BASELINE_BUNDLE_PATH),
         *discovered_candidates,
     ):
         candidate = Path(candidate)

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "leakage_policy": "strict_no_clean_state",
+  "core_weights": [1.0, 1.0, 0.1],
+  "divergence_threshold": 0.008,
+  "persistence_threshold": 0.0,
+  "shield_residual_max": 0.06,
+  "persistence_window": 3,
+  "fusion_weight": 0.7,
+  "cosine_epsilon": 1e-08,
+  "force_off_on_new_arrival": true,
+  "clip_core_to_unit_interval": true
+}

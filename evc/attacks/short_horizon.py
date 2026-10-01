@@ -1,4 +1,4 @@
-"""状态攻击器与 C/F/O 场景规则。"""
+"""Paper short-horizon observation attacks and shared attack routing."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .merged_core import ATTACK_DEFAULTS, canonical_attack_algorithm, to_numpy_1d
+from ..merged_core import ATTACK_DEFAULTS, canonical_attack_algorithm, to_numpy_1d
 
-AttackAlgorithm = Literal['electhacker', 'opposite_pgd', 'opposite_fgsm', 'q_function', 'critic_v', 'action', 'advpolicy', 'pgd', 'fgsm']
+AttackAlgorithm = Literal['electhacker', 'opposite_pgd', 'opposite_fgsm', 'q_function']
 AttackScenario = Literal['C', 'F', 'O']
 AttackScope = Literal['obs', 'vehicle', 'window']
 
@@ -66,21 +66,13 @@ class AttackContext:
 
 
 class PGDStateAttacker:
-    """统一版状态攻击器。
-
-    - electhacker: project-specific targeted attack;
-    - opposite_pgd / opposite_fgsm: paper-style pointwise opposite attacks;
-    - q_function: paper-style critic-guided pointwise attack;
-    - critic_v: paper-style value-guided pointwise attack;
-    - action: maximal action-difference attack;
-    - advpolicy: learned adversarial policy attack.
-    """
+    """State attacker used by the retained pointwise and long-horizon experiments."""
 
     def __init__(
         self,
         actor: torch.nn.Module,
         device: torch.device,
-        algorithm: AttackAlgorithm = 'electhacker',
+        algorithm: AttackAlgorithm = 'opposite_pgd',
         epsilon: float | None = None,
         alpha: float | None = None,
         iters: int | None = None,
@@ -88,14 +80,8 @@ class PGDStateAttacker:
         obs_low: np.ndarray | torch.Tensor | None = None,
         obs_high: np.ndarray | torch.Tensor | None = None,
         critic: torch.nn.Module | None = None,
-        value_model: torch.nn.Module | None = None,
-        adversary: torch.nn.Module | None = None,
         attack_state_scope: str = 'local',
         attack_indices: tuple[int, ...] | list[int] | None = None,
-        adversary_temperature: float = 1.0,
-        adversary_deterministic: bool = True,
-        adversary_context_mode: str = 'none',
-        adversary_station_count: int = 9,
     ) -> None:
         canonical_algorithm = canonical_attack_algorithm(str(algorithm))
         defaults = ATTACK_DEFAULTS[str(canonical_algorithm)]
@@ -103,30 +89,22 @@ class PGDStateAttacker:
         self.device = device
         self.algorithm = canonical_algorithm
         self.critic = None if critic is None else critic.to(device).eval()
-        self.value_model = None if value_model is None else value_model.to(device).eval()
-        self.adversary = None if adversary is None else adversary.to(device).eval()
         self.epsilon = float(defaults.epsilon if epsilon is None else epsilon)
         self.alpha = float(defaults.alpha if alpha is None else alpha)
         self.iters = int(defaults.iters if iters is None else iters)
         self.seed = int(seed)
         self.generator = torch.Generator(device=device)
         self.generator.manual_seed(self.seed)
-        self.adversary_temperature = max(float(adversary_temperature), 1e-6)
-        self.adversary_deterministic = bool(adversary_deterministic)
-        self.adversary_context_mode = str(adversary_context_mode or 'none').strip().lower()
-        self.adversary_station_count = max(int(adversary_station_count), 1)
         self.obs_low = None if obs_low is None else torch.as_tensor(obs_low, dtype=torch.float32, device=self.device).reshape(1, -1)
         self.obs_high = None if obs_high is None else torch.as_tensor(obs_high, dtype=torch.float32, device=self.device).reshape(1, -1)
         if (self.obs_low is None) != (self.obs_high is None):
             raise ValueError('PGDStateAttacker requires both obs_low and obs_high or neither.')
         if self.obs_low is not None and self.obs_low.shape != self.obs_high.shape:
             raise ValueError('PGDStateAttacker obs_low/obs_high must share the same shape.')
+        if self.algorithm not in {'electhacker', 'opposite_pgd', 'opposite_fgsm', 'q_function'}:
+            raise ValueError(f'Unsupported retained attack algorithm: {self.algorithm!r}')
         if self.algorithm == 'q_function' and self.critic is None:
             raise ValueError('q_function attack requires a critic model.')
-        if self.algorithm == 'critic_v' and self.value_model is None:
-            raise ValueError('critic_v attack requires a value model.')
-        if self.algorithm == 'advpolicy' and self.adversary is None:
-            raise ValueError('advpolicy attack requires an adversary policy.')
         self.attack_state_scope = canonical_attack_state_scope(attack_state_scope)
         self.local_attack_idx = tuple(int(v) for v in (attack_indices if attack_indices is not None else attack_indices_for_state_scope(self.attack_state_scope)))
 
@@ -146,14 +124,8 @@ class PGDStateAttacker:
             obs_low=None if self.obs_low is None else self.obs_low.detach().cpu().numpy().reshape(-1),
             obs_high=None if self.obs_high is None else self.obs_high.detach().cpu().numpy().reshape(-1),
             critic=self.critic,
-            value_model=self.value_model,
-            adversary=self.adversary,
             attack_state_scope=self.attack_state_scope,
             attack_indices=self.local_attack_idx,
-            adversary_temperature=self.adversary_temperature,
-            adversary_deterministic=self.adversary_deterministic,
-            adversary_context_mode=self.adversary_context_mode,
-            adversary_station_count=self.adversary_station_count,
         )
 
     def _local_attack_mask(self, obs: torch.Tensor) -> torch.Tensor:
@@ -177,15 +149,6 @@ class PGDStateAttacker:
         if self.algorithm == 'q_function':
             adv = self._generate_q_function(obs_t)
             return adv.detach().cpu().numpy().astype(np.float32)
-        if self.algorithm == 'critic_v':
-            adv = self._generate_critic_value(obs_t)
-            return adv.detach().cpu().numpy().astype(np.float32)
-        if self.algorithm == 'action':
-            adv = self._generate_action_mad(obs_t)
-            return adv.detach().cpu().numpy().astype(np.float32)
-        if self.algorithm == 'advpolicy':
-            adv = self._generate_advpolicy(obs_t, contexts=None)
-            return adv.detach().cpu().numpy().astype(np.float32)
         if target_actions is None:
             with torch.no_grad():
                 ref = self._actor_mean_action(obs_t).detach()
@@ -203,35 +166,13 @@ class PGDStateAttacker:
         return self.attack(to_numpy_1d(obs), target_actions=target).reshape(-1)
 
     def attack_with_context(self, obs_batch: np.ndarray, contexts: list[AttackContext]) -> np.ndarray:
-        if self.algorithm != 'advpolicy':
-            return self.attack(obs_batch)
-        obs_t = torch.as_tensor(np.asarray(obs_batch, dtype=np.float32), device=self.device)
-        if obs_t.ndim == 1:
-            obs_t = obs_t.unsqueeze(0)
-        adv = self._generate_advpolicy(obs_t, contexts=contexts)
-        return adv.detach().cpu().numpy().astype(np.float32)
+        del contexts
+        return self.attack(obs_batch)
 
     def _random_start(self, original: torch.Tensor) -> torch.Tensor:
         noise = torch.empty_like(original).uniform_(-self.epsilon, self.epsilon, generator=self.generator)
         noise = noise * self._local_attack_mask(original)
         return self._project_obs(original, original + noise)
-
-    def _randn_like(self, ref: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-        return torch.randn(ref.shape, device=ref.device, dtype=ref.dtype, generator=self.generator) * float(scale)
-
-    def _actor_action_stats(self, obs_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if hasattr(self.actor, 'mean_action') and hasattr(self.actor, '_distribution'):
-            action_mean = self.actor.mean_action(obs_t)
-            _, std, _ = self.actor._distribution(obs_t)
-            return action_mean, std
-        output = self.actor(obs_t)
-        if isinstance(output, (tuple, list)) and len(output) >= 2:
-            action_mean = output[0]
-            action_std = output[1]
-            return action_mean, action_std
-        action_mean = output
-        action_std = torch.ones_like(action_mean)
-        return action_mean, action_std
 
     def _actor_mean_action(self, obs_t: torch.Tensor) -> torch.Tensor:
         if hasattr(self.actor, 'mean_action'):
@@ -274,103 +215,11 @@ class PGDStateAttacker:
             image = self._project_obs(clean_obs, clean_obs + eta).detach()
         return image
 
-    def _generate_action_mad(self, obs_t: torch.Tensor) -> torch.Tensor:
-        if self.iters <= 0 or self.epsilon <= 0.0:
-            return obs_t.detach().clone()
-        original = obs_t.detach().clone()
-        mask = self._local_attack_mask(original)
-        step_eps = float(self.alpha) if self.alpha > 0.0 else float(self.epsilon) / float(max(self.iters, 1))
-        step_eps = max(step_eps, 1e-6)
-        noise_factor = float(np.sqrt(2.0 * step_eps))
-        states = original + self._randn_like(original, noise_factor).sign() * step_eps * mask
-        eta = torch.clamp(states - original, min=-self.epsilon, max=self.epsilon) * mask
-        states = self._project_obs(original, original + eta).detach()
-        with torch.no_grad():
-            old_action, old_stdev = self._actor_action_stats(original)
-            old_action = old_action.detach()
-            old_stdev = old_stdev.detach()
-            old_stdev = old_stdev / old_stdev.mean().clamp_min(1e-6)
-        for i in range(self.iters):
-            states = states.clone().detach().requires_grad_()
-            action_mean, _ = self._actor_action_stats(states)
-            action_change = (action_mean - old_action) / old_stdev
-            action_objective = (action_change * action_change).sum(dim=1)
-            grad = torch.autograd.grad(action_objective.sum(), states, retain_graph=False, create_graph=False)[0]
-            step_noise = self._randn_like(original, float(np.sqrt(2.0 * step_eps)) / float(i + 2))
-            update = (grad + step_noise).sign() * step_eps * mask
-            adv = states + update
-            eta = torch.clamp(adv - original, min=-self.epsilon, max=self.epsilon) * mask
-            states = self._project_obs(original, original + eta).detach()
-        return states
-
-    def _generate_critic_value(self, obs_t: torch.Tensor) -> torch.Tensor:
-        if self.value_model is None:
-            raise RuntimeError('critic_v attack requires value model.')
-        clean_obs = obs_t.detach().clone()
-        image = self._random_start(clean_obs)
-        for _ in range(self.iters):
-            image.requires_grad_(True)
-            value = self.value_model(image).reshape(-1).mean()
-            grad = torch.autograd.grad(value, image, retain_graph=False, create_graph=False)[0]
-            mask = self._local_attack_mask(clean_obs)
-            adv = image - self.alpha * grad.sign() * mask
-            eta = torch.clamp(adv - clean_obs, min=-self.epsilon, max=self.epsilon) * mask
-            image = self._project_obs(clean_obs, clean_obs + eta).detach()
-        return image
-
-    def _build_adversary_context(self, contexts: list[AttackContext] | None, batch_size: int) -> torch.Tensor | None:
-        if self.adversary is None or contexts is None or self.adversary_context_mode == 'none':
-            return None
-        if len(contexts) != batch_size:
-            raise ValueError('advpolicy attack context length mismatch.')
-        if self.adversary_context_mode == 'arrival':
-            return torch.as_tensor(
-                [[float(bool(ctx.is_new_arrival))] for ctx in contexts],
-                dtype=torch.float32,
-                device=self.device,
-            )
-        if self.adversary_context_mode == 'station':
-            station_ctx = torch.zeros((batch_size, self.adversary_station_count), dtype=torch.float32, device=self.device)
-            for row_idx, ctx in enumerate(contexts):
-                if 0 <= int(ctx.station) < self.adversary_station_count:
-                    station_ctx[row_idx, int(ctx.station)] = 1.0
-            return station_ctx
-        if self.adversary_context_mode == 'station_is_new_arrival':
-            station_ctx = torch.zeros((batch_size, self.adversary_station_count), dtype=torch.float32, device=self.device)
-            arrival_ctx = torch.zeros((batch_size, 1), dtype=torch.float32, device=self.device)
-            for row_idx, ctx in enumerate(contexts):
-                if 0 <= int(ctx.station) < self.adversary_station_count:
-                    station_ctx[row_idx, int(ctx.station)] = 1.0
-                arrival_ctx[row_idx, 0] = float(bool(ctx.is_new_arrival))
-            return torch.cat([station_ctx, arrival_ctx], dim=1)
-        return None
-
-    def _generate_advpolicy(self, obs_t: torch.Tensor, contexts: list[AttackContext] | None) -> torch.Tensor:
-        if self.adversary is None:
-            raise RuntimeError('advpolicy attack requires adversary.')
-        clean_obs = obs_t.detach().clone()
-        context_t = self._build_adversary_context(contexts, int(clean_obs.shape[0]))
-        with torch.no_grad():
-            if hasattr(self.adversary, 'sample'):
-                sample_out = self.adversary.sample(
-                    clean_obs,
-                    context=context_t,
-                    deterministic=self.adversary_deterministic,
-                    temperature=self.adversary_temperature,
-                )
-                adv_obs = sample_out[0] if isinstance(sample_out, tuple) else sample_out
-            else:
-                adv_obs = self.adversary(clean_obs, context=context_t)
-        mask = self._local_attack_mask(clean_obs)
-        delta = torch.clamp(adv_obs - clean_obs, min=-self.epsilon, max=self.epsilon) * mask
-        return self._project_obs(clean_obs, clean_obs + delta)
-
-
 def build_state_attacker(
     actor: torch.nn.Module,
     *,
     device: torch.device,
-    algorithm: AttackAlgorithm = 'electhacker',
+    algorithm: AttackAlgorithm = 'opposite_pgd',
     epsilon: float | None = None,
     alpha: float | None = None,
     iters: int | None = None,
@@ -378,16 +227,8 @@ def build_state_attacker(
     obs_low: np.ndarray | torch.Tensor | None = None,
     obs_high: np.ndarray | torch.Tensor | None = None,
     critic: torch.nn.Module | None = None,
-    value_model: torch.nn.Module | None = None,
-    adversary: torch.nn.Module | None = None,
     attack_state_scope: str = 'local',
     attack_indices: tuple[int, ...] | list[int] | None = None,
-    adversary_temperature: float = 1.0,
-    adversary_deterministic: bool = True,
-    adversary_context_mode: str = 'none',
-    adversary_station_count: int = 9,
-    signals_path=None,
-    reward_profile=None,
 ):
     """根据 algorithm 构造攻击器。"""
     canonical_algorithm = canonical_attack_algorithm(str(algorithm))
@@ -402,19 +243,13 @@ def build_state_attacker(
         obs_low=obs_low,
         obs_high=obs_high,
         critic=critic,
-        value_model=value_model,
-        adversary=adversary,
         attack_state_scope=attack_state_scope,
         attack_indices=attack_indices,
-        adversary_temperature=adversary_temperature,
-        adversary_deterministic=adversary_deterministic,
-        adversary_context_mode=adversary_context_mode,
-        adversary_station_count=adversary_station_count,
     )
 
 
 def scenario_target(context: AttackContext, obs: np.ndarray) -> float | None:
-    """根据 C/F/O 规则给 targeted attack 生成目标动作。"""
+    """Return the C/F/O target action used by the ElectHacker conditions."""
     obs = to_numpy_1d(obs)
     if context.scenario == 'C':
         return -1.0 if context.raw_price < context.price_threshold else 1.0
@@ -425,7 +260,7 @@ def scenario_target(context: AttackContext, obs: np.ndarray) -> float | None:
     if context.scenario == 'O':
         threshold = context.soc_new_threshold if context.is_new_arrival else context.soc_rollout_threshold
         return -1.0 if float(obs[0]) < threshold else 1.0
-    raise ValueError(f'未知攻击场景: {context.scenario}')
+    raise ValueError(f'Unsupported attack scenario: {context.scenario!r}')
 
 
 def _bounded_ratio(attack_ratio: float) -> float:
@@ -547,40 +382,30 @@ def attack_batch_by_context(
             attacked_flags[global_idx] = bool(np.max(np.abs(delta)) > 1e-9)
         return out, attacked_flags
 
-    if algorithm in ('opposite_pgd', 'opposite_fgsm', 'q_function', 'critic_v', 'action', 'advpolicy'):
-        out = [to_numpy_1d(obs).copy() for obs in obs_batch]
-        attacked_flags = [False for _ in obs_batch]
-        selected_indices = [i for i, should_attack in enumerate(ratio_mask) if should_attack]
-        if not selected_indices:
-            return out, attacked_flags
-        selected_batch = batch[selected_indices]
-        if algorithm == 'advpolicy' and hasattr(attacker, 'attack_with_context'):
-            selected_contexts = [contexts[i] for i in selected_indices]
-            adv = attacker.attack_with_context(selected_batch, selected_contexts)
-        else:
-            adv = attacker.attack(selected_batch, target_actions=None)
+    out = [to_numpy_1d(obs).copy() for obs in obs_batch]
+    attacked_flags = [False for _ in obs_batch]
+    selected_indices = [i for i, should_attack in enumerate(ratio_mask) if should_attack]
+    if not selected_indices:
+        return out, attacked_flags
+
+    if algorithm in {'opposite_pgd', 'opposite_fgsm', 'q_function'}:
+        adv = attacker.attack(batch[selected_indices], target_actions=None)
         for local_idx, global_idx in enumerate(selected_indices):
             out[global_idx] = adv[local_idx].reshape(-1)
             attacked_flags[global_idx] = True
         return out, attacked_flags
 
-    out = [to_numpy_1d(obs).copy() for obs in obs_batch]
-    attacked_flags = [False for _ in obs_batch]
+    if algorithm != 'electhacker':
+        raise ValueError(f'Unsupported retained attack algorithm: {algorithm!r}')
     groups: dict[float, list[int]] = {}
-    for idx, (obs, ctx) in enumerate(zip(obs_batch, contexts)):
-        if not ratio_mask[idx]:
-            continue
-        target = scenario_target(ctx, to_numpy_1d(obs))
-        if target is None:
-            continue
-        groups.setdefault(float(target), []).append(idx)
-        attacked_flags[idx] = True
-
+    for global_idx in selected_indices:
+        target = scenario_target(contexts[global_idx], batch[global_idx])
+        if target is not None:
+            groups.setdefault(float(target), []).append(global_idx)
+            attacked_flags[global_idx] = True
     for target, indices in groups.items():
-        sub_batch = np.stack([to_numpy_1d(obs_batch[i]) for i in indices], axis=0)
-        target_actions = np.full((len(indices), 1), float(target), dtype=np.float32)
-        adv = attacker.attack(sub_batch, target_actions=target_actions)
+        target_actions = np.full((len(indices), 1), target, dtype=np.float32)
+        adv = attacker.attack(batch[indices], target_actions=target_actions)
         for local_idx, global_idx in enumerate(indices):
             out[global_idx] = adv[local_idx].reshape(-1)
-
     return out, attacked_flags

@@ -38,7 +38,7 @@ from evc.defense import (
     save_detector,
     save_detector_history,
 )
-from evc.merged_attacks import PGDStateAttacker
+from evc.attacks import PGDStateAttacker
 from evc.merged_core import (
     ChargingEnv,
     Critic,
@@ -58,7 +58,7 @@ from evc.offline_dae_det_temporal_shield import (
     calibrate_local_temporal_shield,
     save_temporal_shield_bundle,
 )
-from evc.ug_bcr import BeliefCoreConfig, UGBCRConfig, UrgencyGateConfig
+from evc.pd_bcr import load_pd_bcr_config
 
 
 def configure_line_buffering() -> None:
@@ -174,6 +174,11 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seq-len", type=int, default=8)
     parser.add_argument("--shield-val-scenes", type=int, default=30)
+    parser.add_argument(
+        "--pd-bcr-config",
+        type=Path,
+        default=PACKAGE_ROOT / "configs" / "pd_bcr_config.json",
+    )
     parser.add_argument("--save-pair-datasets", action="store_true")
     args = parser.parse_args()
 
@@ -366,19 +371,12 @@ def main():
     )
     shield_rows.to_csv(args.output_dir / "temporal_shield_calibration.csv", index=False)
 
-    ug_bcr = UGBCRConfig(
-        belief=BeliefCoreConfig(enabled=True),
-        urgency_gate=UrgencyGateConfig(
-            enabled=True,
-            urgency_gain_threshold=0.010,
-            soc_drop_threshold=0.025,
-            time_drop_threshold=0.013,
-            uncertainty_threshold=0.065,
-            temporal_residual_threshold=0.022,
-        ),
-    )
-    ug_bcr_path = args.output_dir / "ug_bcr_config.json"
-    write_json(ug_bcr_path, asdict(ug_bcr))
+    # Paper-aligned final corrector: conjunctive constraint gate after Temporal Shield.
+    # These thresholds are validation-calibrated project defaults and remain a
+    # separate frozen artifact so test scenarios never tune the module.
+    pd_bcr = load_pd_bcr_config(args.pd_bcr_config)
+    pd_bcr_path = args.output_dir / "pd_bcr_config.json"
+    write_json(pd_bcr_path, asdict(pd_bcr))
 
     manifest = {
         "status": "trained",
@@ -388,7 +386,8 @@ def main():
         "detector": str(detector_path),
         "detector_threshold": threshold_report,
         "temporal_shield": str(shield_path),
-        "ug_bcr_config": str(ug_bcr_path),
+        "pd_bcr_config": str(pd_bcr_path),
+        "runtime_pipeline_order": "DAE/DET route -> Temporal Shield -> PD-BCR -> Actor",
         "train_attacks": attack_tags,
         "epsilon": args.epsilon,
         "state_scope": args.state_scope,

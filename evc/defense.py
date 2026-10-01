@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
@@ -469,139 +468,6 @@ class DenoisingAutoencoder(nn.Module, _DualStreamSequenceMixin):
                 'lengths': lengths,
             }
         return recon
-
-
-class DetectorGRUVAE(nn.Module, _DualStreamSequenceMixin):
-    """v9 dual-stream sequence anomaly detector using grouped reconstruction error."""
-
-    def __init__(
-        self,
-        input_dim: int = 11,
-        hidden_dim: int = 128,
-        latent_dim: int = 64,
-        num_layers: int = 1,
-        seq_len: int = 8,
-        local_indices: Sequence[int] = STATE_LOCAL_IDX,
-        global_indices: Sequence[int] = STATE_GLOBAL_IDX,
-        grouped_score_alpha: float = 0.5,
-        local_only_score: bool = True,
-        global_passthrough: bool = True,
-    ) -> None:
-        super().__init__()
-        self.input_dim = int(input_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.latent_dim = int(latent_dim)
-        self.num_layers = int(num_layers)
-        self.seq_len = int(seq_len)
-        self.local_indices = tuple(int(v) for v in local_indices)
-        self.global_indices = tuple(int(v) for v in global_indices)
-        self.local_only_score = bool(local_only_score)
-        self.global_passthrough = bool(global_passthrough)
-        self.local_dim = len(self.local_indices)
-        self.global_dim = len(self.global_indices)
-        if self.local_dim <= 0:
-            raise ValueError('DetectorGRUVAE requires at least one scored state index.')
-        self.local_hidden_dim = self.hidden_dim if self.global_dim <= 0 else max(self.hidden_dim // 2, 8)
-        self.global_hidden_dim = max(self.hidden_dim - self.local_hidden_dim, 8) if self.global_dim > 0 else 0
-        self.fused_hidden_dim = self.local_hidden_dim + self.global_hidden_dim
-        self.grouped_score_alpha = float(grouped_score_alpha)
-
-        self.local_encoder = nn.GRU(
-            input_size=self.local_dim,
-            hidden_size=self.local_hidden_dim,
-            num_layers=self.num_layers,
-            batch_first=True,
-        )
-        self.global_encoder = None
-        if self.global_dim > 0:
-            self.global_encoder = nn.GRU(
-                input_size=self.global_dim,
-                hidden_size=self.global_hidden_dim,
-                num_layers=self.num_layers,
-                batch_first=True,
-            )
-        self.posterior_mu = nn.Linear(self.fused_hidden_dim, self.latent_dim)
-        self.posterior_logvar = nn.Linear(self.fused_hidden_dim, self.latent_dim)
-        self.prior_mu = nn.Linear(self.fused_hidden_dim, self.latent_dim)
-        self.prior_logvar = nn.Linear(self.fused_hidden_dim, self.latent_dim)
-        self.decoder_init = nn.Linear(self.fused_hidden_dim + self.latent_dim, self.fused_hidden_dim)
-        self.decoder_gru = nn.GRU(
-            input_size=self.latent_dim,
-            hidden_size=self.fused_hidden_dim,
-            num_layers=self.num_layers,
-            batch_first=True,
-        )
-        self.local_head = nn.Sequential(
-            nn.Linear(self.fused_hidden_dim, self.local_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.local_hidden_dim, self.local_dim),
-            nn.Sigmoid(),
-        )
-
-    def get_config(self) -> dict[str, Any]:
-        return {
-            'input_dim': self.input_dim,
-            'hidden_dim': self.hidden_dim,
-            'latent_dim': self.latent_dim,
-            'num_layers': self.num_layers,
-            'seq_len': self.seq_len,
-            'local_indices': list(self.local_indices),
-            'global_indices': list(self.global_indices),
-            'grouped_score_alpha': self.grouped_score_alpha,
-            'local_only_score': self.local_only_score,
-            'global_passthrough': self.global_passthrough,
-        }
-
-    def _encode_dual(self, local_seq: torch.Tensor, global_seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-        h_local = self._encode_stream(self.local_encoder, local_seq, lengths, self.local_hidden_dim)
-        if self.global_encoder is None or self.global_dim <= 0:
-            return h_local
-        h_global = self._encode_stream(self.global_encoder, global_seq, lengths, self.global_hidden_dim)
-        return torch.cat([h_local, h_global], dim=1)
-
-    def forward(
-        self,
-        x_local: torch.Tensor,
-        x_global: torch.Tensor | None = None,
-        lengths: torch.Tensor | None = None,
-        *,
-        return_stats: bool = False,
-        sample_latent: bool | None = None,
-    ):
-        seq_full, local_seq, global_seq = self._prepare_inputs(x_local, x_global)
-        batch_size, seq_steps, _ = seq_full.shape
-        if lengths is None:
-            lengths = torch.full((batch_size,), seq_steps, dtype=torch.long, device=seq_full.device)
-        else:
-            lengths = lengths.to(seq_full.device, dtype=torch.long).reshape(-1)
-        h_post = self._encode_dual(local_seq, global_seq, lengths)
-        prev_lengths = torch.clamp(lengths - 1, min=0)
-        h_prev = self._encode_dual(local_seq, global_seq, prev_lengths)
-        mu_post = self.posterior_mu(h_post)
-        logvar_post = torch.clamp(self.posterior_logvar(h_post), min=-10.0, max=10.0)
-        mu_prior = self.prior_mu(h_prev)
-        logvar_prior = torch.clamp(self.prior_logvar(h_prev), min=-10.0, max=10.0)
-        if sample_latent is None:
-            sample_latent = bool(self.training)
-        if sample_latent:
-            std = torch.exp(0.5 * logvar_post)
-            z_t = mu_post + torch.randn_like(std) * std
-        else:
-            z_t = mu_post
-        z_seq = z_t.unsqueeze(1).expand(batch_size, seq_steps, self.latent_dim)
-        init_hidden = torch.tanh(self.decoder_init(torch.cat([h_prev, z_t], dim=1))).unsqueeze(0).expand(self.num_layers, batch_size, self.fused_hidden_dim).contiguous()
-        dec_out, _ = self.decoder_gru(z_seq, init_hidden)
-        recon_local = self.local_head(dec_out)
-        recon_seq = _merge_state_tensor(recon_local, global_seq, input_dim=self.input_dim, local_indices=self.local_indices, global_indices=self.global_indices)
-        if return_stats:
-            return recon_seq, {
-                'mu_post': mu_post,
-                'logvar_post': logvar_post,
-                'mu_prior': mu_prior,
-                'logvar_prior': logvar_prior,
-                'lengths': lengths,
-            }
-        return recon_seq
 
 
 class PosteriorBenefitMLPDetector(nn.Module):
@@ -1090,55 +956,6 @@ class SequenceDenoiseDataset(Dataset):
         }
 
 
-class DetectorSequenceDataset(Dataset):
-    def __init__(
-        self,
-        clean_inputs: np.ndarray,
-        *,
-        episode_indices: np.ndarray | None,
-        vehicle_ids: np.ndarray | None,
-        seq_len: int,
-        local_indices: Sequence[int] = STATE_LOCAL_IDX,
-        global_indices: Sequence[int] = STATE_GLOBAL_IDX,
-    ) -> None:
-        self.clean_inputs = np.asarray(clean_inputs, dtype=np.float32).reshape(-1, 11)
-        total = int(self.clean_inputs.shape[0])
-        if episode_indices is None:
-            episode_indices = np.zeros((total,), dtype=np.int64)
-        if vehicle_ids is None:
-            vehicle_ids = np.arange(total, dtype=np.int64)
-        self.episode_indices = np.asarray(episode_indices, dtype=np.int64).reshape(-1)
-        self.vehicle_ids = np.asarray(vehicle_ids, dtype=np.int64).reshape(-1)
-        self.seq_len = int(seq_len)
-        self.local_indices = tuple(int(v) for v in local_indices)
-        self.global_indices = tuple(int(v) for v in global_indices)
-        groups: dict[tuple[int, int], list[int]] = defaultdict(list)
-        for idx, pair in enumerate(zip(self.episode_indices.tolist(), self.vehicle_ids.tolist())):
-            groups[(int(pair[0]), int(pair[1]))].append(int(idx))
-        self.samples: list[list[int]] = []
-        for indices in groups.values():
-            for pos in range(len(indices)):
-                start = max(0, pos - self.seq_len + 1)
-                self.samples.append(indices[start : pos + 1])
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        indices = self.samples[int(idx)]
-        length = len(indices)
-        seq_full = np.zeros((self.seq_len, self.clean_inputs.shape[1]), dtype=np.float32)
-        seq_full[:length] = self.clean_inputs[indices]
-        x_local, x_global = _split_state_array(seq_full, local_indices=self.local_indices, global_indices=self.global_indices)
-        return {
-            'x_local': torch.as_tensor(x_local, dtype=torch.float32),
-            'x_global': torch.as_tensor(x_global, dtype=torch.float32),
-            'length': torch.as_tensor(length, dtype=torch.long),
-            'target_seq': torch.as_tensor(seq_full, dtype=torch.float32),
-        }
-
-
-
 def _build_history_windows_numpy(inputs: np.ndarray, *, episode_indices: np.ndarray | None, vehicle_ids: np.ndarray | None, seq_len: int) -> tuple[np.ndarray, np.ndarray]:
     inputs = np.asarray(inputs, dtype=np.float32).reshape(-1, 11)
     total = int(inputs.shape[0])
@@ -1490,302 +1307,6 @@ def train_dae(
     )
 
 
-def train_sequence_detector(
-    clean_inputs: np.ndarray,
-    device: torch.device,
-    *,
-    episode_indices: np.ndarray | None,
-    vehicle_ids: np.ndarray | None,
-    eval_clean_inputs: np.ndarray | None = None,
-    eval_adv_inputs: np.ndarray | None = None,
-    eval_episode_indices: np.ndarray | None = None,
-    eval_vehicle_ids: np.ndarray | None = None,
-    seq_len: int = 8,
-    hidden_dim: int = 128,
-    latent_dim: int = 64,
-    num_layers: int = 1,
-    beta_kl: float = 1e-3,
-    epochs: int = 30,
-    batch_size: int = 256,
-    lr: float = 1e-3,
-    val_ratio: float = 0.2,
-    seed: int = 42,
-    state_scope: str = 'local',
-    progress_dir: str | Path | None = None,
-    progress_prefix: str = 'detector',
-) -> tuple[DetectorGRUVAE, DetectorTrainResult]:
-    scope = canonical_state_scope(state_scope)
-    defended_indices = defended_indices_for_scope(scope)
-    conditioning_indices = conditioning_indices_for_scope(scope)
-    dataset = DetectorSequenceDataset(
-        clean_inputs,
-        episode_indices=episode_indices,
-        vehicle_ids=vehicle_ids,
-        seq_len=seq_len,
-        local_indices=defended_indices,
-        global_indices=conditioning_indices,
-    )
-    total = len(dataset)
-    if total == 0:
-        raise ValueError('Detector training requires non-empty Dnormal sequences.')
-    rng = np.random.default_rng(seed)
-    indices = np.arange(total)
-    rng.shuffle(indices)
-    split = max(1, int(round(total * (1.0 - float(val_ratio)))))
-    if split >= total:
-        split = max(total - 1, 1)
-    train_loader = DataLoader(Subset(dataset, indices[:split].tolist()), batch_size=int(batch_size), shuffle=True)
-    val_loader = DataLoader(Subset(dataset, indices[split:].tolist()), batch_size=int(batch_size), shuffle=False)
-
-    model = DetectorGRUVAE(
-        input_dim=11,
-        hidden_dim=hidden_dim,
-        latent_dim=latent_dim,
-        num_layers=num_layers,
-        seq_len=seq_len,
-        local_indices=defended_indices,
-        global_indices=conditioning_indices,
-    ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=float(lr))
-
-    train_loss_history: list[float] = []
-    val_loss_history: list[float] = []
-    val_accuracy_history: list[float] = []
-    val_precision_history: list[float] = []
-    val_recall_history: list[float] = []
-    val_f1_history: list[float] = []
-    is_best_history: list[bool] = []
-    best_epoch = -1
-    best_metric_name = 'val_loss'
-    best_metric_value = float('inf')
-    best_metric_key = None
-    best_state_dict = None
-    progress_root = None if progress_dir is None else Path(progress_dir)
-    progress_name = str(progress_prefix).strip() or 'detector'
-    progress_rows: list[dict[str, Any]] = []
-    history_live_path = None if progress_root is None else progress_root / f'{progress_name}_history_live.csv'
-    best_live_path = None if progress_root is None else progress_root / f'{progress_name}_best_live.json'
-
-    for epoch in range(int(epochs)):
-        model.train()
-        batch_losses = []
-        for batch in train_loader:
-            x_local = batch['x_local'].to(device)
-            x_global = batch['x_global'].to(device)
-            lengths = batch['length'].to(device)
-            target_seq = batch['target_seq'].to(device)
-            recon_seq, stats = model(x_local, x_global, lengths, return_stats=True, sample_latent=True)
-            rec_loss = _masked_reconstruction_loss(recon_seq, target_seq, lengths)
-            kl_loss = _kl_to_conditional_prior(stats['mu_post'], stats['logvar_post'], stats['mu_prior'], stats['logvar_prior'])
-            loss = rec_loss + float(beta_kl) * kl_loss
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            batch_losses.append(float(loss.detach().cpu()))
-        train_loss_history.append(float(np.mean(batch_losses) if batch_losses else 0.0))
-
-        model.eval()
-        val_losses = []
-        with torch.no_grad():
-            for batch in val_loader:
-                x_local = batch['x_local'].to(device)
-                x_global = batch['x_global'].to(device)
-                lengths = batch['length'].to(device)
-                target_seq = batch['target_seq'].to(device)
-                recon_seq, stats = model(x_local, x_global, lengths, return_stats=True, sample_latent=False)
-                rec_loss = _masked_reconstruction_loss(recon_seq, target_seq, lengths)
-                kl_loss = _kl_to_conditional_prior(stats['mu_post'], stats['logvar_post'], stats['mu_prior'], stats['logvar_prior'])
-                val_losses.append(float((rec_loss + float(beta_kl) * kl_loss).detach().cpu()))
-        val_loss = float(np.mean(val_losses) if val_losses else train_loss_history[-1])
-        val_loss_history.append(val_loss)
-        current_best = False
-
-        if eval_clean_inputs is not None and eval_adv_inputs is not None:
-            metrics, _, _ = evaluate_detector_metrics(
-                model,
-                eval_clean_inputs,
-                eval_adv_inputs,
-                device,
-                episode_indices=eval_episode_indices,
-                vehicle_ids=eval_vehicle_ids,
-                threshold=None,
-                grid_size=31,
-            )
-            val_accuracy_history.append(float(metrics['clean_accuracy']))
-            val_precision_history.append(float(metrics['attack_precision']))
-            val_recall_history.append(float(metrics['attack_recall']))
-            val_f1_history.append(float(metrics['attack_f1']))
-            clean_ok = float(metrics['clean_accuracy']) >= float(DETECTOR_SELECTION_MIN_CLEAN_ACCURACY)
-            metric_key = (
-                1.0 if clean_ok else 0.0,
-                float(metrics['attack_f1']),
-                float(metrics['attack_recall']),
-                float(metrics['attack_precision']),
-                float(metrics['clean_accuracy']),
-                -float(metrics['false_negative_rate']),
-                -float(val_loss),
-            )
-            if best_metric_key is None or metric_key > best_metric_key:
-                best_metric_key = metric_key
-                best_metric_name = 'val_attack_f1_under_clean_floor'
-                best_metric_value = float(metrics['attack_f1'])
-                best_epoch = int(epoch + 1)
-                best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                current_best = True
-        else:
-            val_accuracy_history.append(float('nan'))
-            val_precision_history.append(float('nan'))
-            val_recall_history.append(float('nan'))
-            val_f1_history.append(float('nan'))
-            current_best = val_loss < best_metric_value or best_epoch < 0
-            if current_best:
-                best_metric_value = val_loss
-                best_epoch = int(epoch + 1)
-                best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        is_best_history.append(current_best)
-        progress_row = {
-            'epoch': int(epoch + 1),
-            'max_epochs': int(epochs),
-            'train_loss': train_loss_history[-1],
-            'val_loss': val_loss,
-            'val_accuracy': val_accuracy_history[-1],
-            'val_precision': val_precision_history[-1],
-            'val_recall': val_recall_history[-1],
-            'val_f1': val_f1_history[-1],
-            'is_best': bool(current_best),
-            'best_epoch': int(best_epoch),
-            'best_metric_name': str(best_metric_name),
-            'best_metric_value': float(best_metric_value),
-        }
-        progress_rows.append(progress_row)
-        _write_progress_frame(history_live_path, progress_rows)
-        _write_progress_json(
-            best_live_path,
-            {
-                'epoch': int(epoch + 1),
-                'max_epochs': int(epochs),
-                'best_epoch': int(best_epoch),
-                'best_metric_name': str(best_metric_name),
-                'best_metric_value': float(best_metric_value),
-                'latest_epoch_is_best': bool(current_best),
-            },
-        )
-        print(
-            f'[DET-sequence] epoch={epoch + 1:03d}/{epochs} '
-            f'train_loss={train_loss_history[-1]:.6f} val_loss={val_loss:.6f} '
-            f'f1={val_f1_history[-1]:.6f} recall={val_recall_history[-1]:.6f} '
-            f'precision={val_precision_history[-1]:.6f} best_epoch={best_epoch} '
-            f'best_{best_metric_name}={best_metric_value:.6f} is_best={int(current_best)}',
-            flush=True,
-        )
-
-    if best_state_dict is not None:
-        model.load_state_dict(best_state_dict)
-    return model, DetectorTrainResult(
-        train_loss_history=train_loss_history,
-        val_loss_history=val_loss_history,
-        val_accuracy_history=val_accuracy_history,
-        val_precision_history=val_precision_history,
-        val_recall_history=val_recall_history,
-        val_f1_history=val_f1_history,
-        is_best_history=is_best_history,
-        best_epoch=best_epoch,
-        best_metric_name=best_metric_name,
-        best_metric_value=best_metric_value,
-    )
-
-
-def _detector_last_step_local_score(
-    seq_t: torch.Tensor,
-    recon_seq: torch.Tensor,
-    lengths: torch.Tensor,
-    *,
-    local_indices: Sequence[int] = STATE_LOCAL_IDX,
-    global_indices: Sequence[int] = STATE_GLOBAL_IDX,
-) -> torch.Tensor:
-    pos = torch.clamp(lengths - 1, min=0).long()
-    batch_idx = torch.arange(seq_t.shape[0], device=seq_t.device)
-    obs_t = seq_t[batch_idx, pos, :]
-    recon_t = recon_seq[batch_idx, pos, :]
-    obs_local, _ = _split_state_tensor(obs_t, local_indices=local_indices, global_indices=global_indices)
-    rec_local, _ = _split_state_tensor(recon_t, local_indices=local_indices, global_indices=global_indices)
-    return torch.max(torch.abs(obs_local - rec_local), dim=1).values
-
-
-@torch.no_grad()
-def detector_anomaly_scores(model: DetectorGRUVAE, obs_inputs: np.ndarray, device: torch.device, *, episode_indices: np.ndarray | None, vehicle_ids: np.ndarray | None, batch_size: int = 1024, seq_len: int | None = None) -> np.ndarray:
-    inputs = np.asarray(obs_inputs, dtype=np.float32).reshape(-1, 11)
-    if inputs.shape[0] == 0:
-        return np.zeros((0,), dtype=np.float32)
-    seq_len = int(seq_len or getattr(model, 'seq_len', 1))
-    seqs, lengths = _build_history_windows_numpy(inputs, episode_indices=episode_indices, vehicle_ids=vehicle_ids, seq_len=seq_len)
-    model = model.to(device).eval()
-    out: list[np.ndarray] = []
-    for start in range(0, seqs.shape[0], int(batch_size)):
-        end = min(seqs.shape[0], start + int(batch_size))
-        seq_t = torch.as_tensor(seqs[start:end], dtype=torch.float32, device=device)
-        len_t = torch.as_tensor(lengths[start:end], dtype=torch.long, device=device)
-        recon_seq = model(seq_t, None, len_t, sample_latent=False)
-        scores = _detector_last_step_local_score(
-            seq_t,
-            recon_seq,
-            len_t,
-            local_indices=getattr(model, 'local_indices', STATE_LOCAL_IDX),
-            global_indices=getattr(model, 'global_indices', STATE_GLOBAL_IDX),
-        ).detach().cpu().numpy().astype(np.float32)
-        out.append(scores)
-    return np.concatenate(out, axis=0) if out else np.zeros((0,), dtype=np.float32)
-
-
-def select_canomaly_from_scores(clean_scores: np.ndarray, attacked_scores: np.ndarray, *, grid_size: int = 31, min_clean_accuracy: float | None = DETECTOR_SELECTION_MIN_CLEAN_ACCURACY) -> tuple[float, list[dict[str, Any]], int]:
-    clean_scores = np.asarray(clean_scores, dtype=np.float32).reshape(-1)
-    attacked_scores = np.asarray(attacked_scores, dtype=np.float32).reshape(-1)
-    all_scores = np.concatenate([clean_scores, attacked_scores], axis=0) if attacked_scores.size else clean_scores.copy()
-    if all_scores.size == 0:
-        return float('inf'), [], -1
-    thresholds = np.unique(np.quantile(all_scores, np.linspace(0.0, 1.0, max(int(grid_size), 5)))).tolist()
-    thresholds.append(float(np.max(all_scores) + 1e-6))
-    rows: list[dict[str, Any]] = []
-    best_idx = -1
-    best_key = None
-    clean_floor = None if min_clean_accuracy is None else float(np.clip(min_clean_accuracy, 0.0, 1.0))
-    for idx, threshold in enumerate(thresholds):
-        clean_pred = clean_scores > float(threshold)
-        attack_pred = attacked_scores > float(threshold)
-        tp = float(np.sum(attack_pred))
-        fn = float(attack_pred.size - np.sum(attack_pred))
-        fp = float(np.sum(clean_pred))
-        tn = float(clean_pred.size - np.sum(clean_pred))
-        precision = 0.0 if (tp + fp) <= 0.0 else tp / (tp + fp)
-        recall = 0.0 if attacked_scores.size == 0 else tp / max(float(attacked_scores.size), 1e-6)
-        f1 = 0.0 if (precision + recall) <= 0.0 else 2.0 * precision * recall / max(precision + recall, 1e-6)
-        clean_accuracy = 0.0 if (tn + fp) <= 0.0 else tn / (tn + fp)
-        fnr = 0.0 if (tp + fn) <= 0.0 else fn / (tp + fn)
-        clean_ok = clean_floor is None or clean_accuracy >= clean_floor
-        row = {
-            'candidate_rank': int(idx),
-            'threshold': float(threshold),
-            'clean_accuracy': float(clean_accuracy),
-            'false_positive_rate': float(1.0 - clean_accuracy),
-            'attack_precision': float(precision),
-            'attack_recall': float(recall),
-            'attack_f1': float(f1),
-            'false_negative_rate': float(fnr),
-            'clean_accuracy_floor': None if clean_floor is None else float(clean_floor),
-            'clean_constraint_ok': bool(clean_ok),
-        }
-        rows.append(row)
-        if clean_ok:
-            key = (1.0, float(f1), float(recall), float(clean_accuracy), -float(fnr), -float(threshold))
-        else:
-            key = (0.0, float(clean_accuracy), float(f1), float(recall), -float(fnr), -float(threshold))
-        if best_key is None or key > best_key:
-            best_key = key
-            best_idx = idx
-    return float(rows[best_idx]['threshold']), rows, int(best_idx)
-
-
-@torch.no_grad()
 def dae_reconstruction_with_history(model: nn.Module, obs_inputs: np.ndarray, device: torch.device, *, episode_indices: np.ndarray | None, vehicle_ids: np.ndarray | None, batch_size: int = 1024, seq_len: int | None = None) -> np.ndarray:
     inputs = np.asarray(obs_inputs, dtype=np.float32).reshape(-1, 11)
     if inputs.shape[0] == 0:
@@ -1846,47 +1367,6 @@ class SequentialDAERuntime:
         for key, obs in zip(keys, batch):
             self.buffers[key].append(np.asarray(obs, dtype=np.float32).reshape(-1))
         return _clip_reconstruction_to_model_bounds(self.model, recon)
-
-
-class SequentialDetectorRuntime:
-    def __init__(self, model: DetectorGRUVAE, device: torch.device) -> None:
-        self.model = model.to(device).eval()
-        self.device = device
-        self.seq_len = int(getattr(model, 'seq_len', 1))
-        self.buffers: defaultdict[tuple[int, int], deque[np.ndarray]] = defaultdict(lambda: deque(maxlen=self.seq_len))
-
-    def reset(self) -> None:
-        self.buffers.clear()
-
-    @torch.no_grad()
-    def score_batch(self, obs_batch: Sequence[np.ndarray] | np.ndarray, *, vehicle_ids: Sequence[int] | np.ndarray, episode_index: int = 0, threshold: float | None = None) -> tuple[np.ndarray, list[bool]]:
-        batch = np.asarray(obs_batch, dtype=np.float32).reshape(-1, 11)
-        vehicle_ids = np.asarray(vehicle_ids, dtype=np.int64).reshape(-1)
-        seqs = np.zeros((batch.shape[0], self.seq_len, batch.shape[1]), dtype=np.float32)
-        lengths = np.zeros((batch.shape[0],), dtype=np.int64)
-        keys: list[tuple[int, int]] = []
-        for i in range(batch.shape[0]):
-            key = (int(episode_index), int(vehicle_ids[i]))
-            keys.append(key)
-            hist = list(self.buffers[key])
-            full = hist + [batch[i]]
-            keep = full[-self.seq_len :]
-            seqs[i, : len(keep)] = np.asarray(keep, dtype=np.float32)
-            lengths[i] = len(keep)
-        seq_t = torch.as_tensor(seqs, dtype=torch.float32, device=self.device)
-        len_t = torch.as_tensor(lengths, dtype=torch.long, device=self.device)
-        recon_seq = self.model(seq_t, None, len_t, sample_latent=False)
-        scores = _detector_last_step_local_score(
-            seq_t,
-            recon_seq,
-            len_t,
-            local_indices=getattr(self.model, 'local_indices', STATE_LOCAL_IDX),
-            global_indices=getattr(self.model, 'global_indices', STATE_GLOBAL_IDX),
-        ).detach().cpu().numpy().astype(np.float32)
-        for key, obs in zip(keys, batch):
-            self.buffers[key].append(np.asarray(obs, dtype=np.float32).reshape(-1))
-        flags = [bool(score > float(threshold)) for score in scores] if threshold is not None else [False for _ in scores]
-        return scores, flags
 
 
 def _subset_mask_from_attack(clean_inputs: np.ndarray, adv_inputs: np.ndarray, attack_mask: np.ndarray | None = None) -> np.ndarray:
@@ -1973,62 +1453,6 @@ def evaluate_dae_metrics(
     return metrics, per_dim
 
 
-@torch.no_grad()
-def evaluate_detector_metrics(detector_model: DetectorGRUVAE, clean_inputs: np.ndarray, adv_inputs: np.ndarray, device: torch.device, *, episode_indices: np.ndarray | None, vehicle_ids: np.ndarray | None, threshold: float | None = None, grid_size: int = 31, attack_mask: np.ndarray | None = None) -> tuple[dict[str, float], pd.DataFrame, pd.DataFrame]:
-    clean_inputs = np.asarray(clean_inputs, dtype=np.float32).reshape(-1, 11)
-    adv_inputs = np.asarray(adv_inputs, dtype=np.float32).reshape(-1, 11)
-    clean_scores = detector_anomaly_scores(detector_model, clean_inputs, device, episode_indices=episode_indices, vehicle_ids=vehicle_ids, seq_len=int(getattr(detector_model, 'seq_len', 1)))
-    adv_scores_all = detector_anomaly_scores(detector_model, adv_inputs, device, episode_indices=episode_indices, vehicle_ids=vehicle_ids, seq_len=int(getattr(detector_model, 'seq_len', 1)))
-    subset_mask = _subset_mask_from_attack(clean_inputs, adv_inputs, attack_mask=attack_mask)
-    adv_scores = adv_scores_all[subset_mask]
-    if threshold is None:
-        threshold, history_rows, best_idx = select_canomaly_from_scores(clean_scores, adv_scores, grid_size=grid_size)
-    else:
-        threshold = float(threshold)
-        _, history_rows, best_idx = select_canomaly_from_scores(clean_scores, adv_scores, grid_size=grid_size)
-    clean_pred = clean_scores > float(threshold)
-    adv_pred = adv_scores > float(threshold)
-    tp = int(np.sum(adv_pred))
-    fn = int(adv_pred.size - tp)
-    fp = int(np.sum(clean_pred))
-    tn = int(clean_pred.size - fp)
-    precision = 0.0 if (tp + fp) == 0 else float(tp / float(tp + fp))
-    recall = 0.0 if (tp + fn) == 0 else float(tp / float(tp + fn))
-    f1 = 0.0 if (precision + recall) == 0 else float((2.0 * precision * recall) / (precision + recall))
-    clean_accuracy = 0.0 if (tn + fp) == 0 else float(tn / float(tn + fp))
-    false_negative_rate = 0.0 if (tp + fn) == 0 else float(fn / float(tp + fn))
-    false_positive_rate = 0.0 if (fp + tn) == 0 else float(fp / float(fp + tn))
-    metrics = {
-        'clean_sample_count': int(clean_scores.size),
-        'attacked_sample_count': int(adv_scores.size),
-        'threshold': float(threshold),
-        'clean_accuracy': float(clean_accuracy),
-        'false_positive_rate': float(false_positive_rate),
-        'attack_precision': float(precision),
-        'attack_recall': float(recall),
-        'attack_f1': float(f1),
-        'false_negative_rate': float(false_negative_rate),
-        'tp': int(tp),
-        'tn': int(tn),
-        'fp': int(fp),
-        'fn': int(fn),
-        'clean_score_mean': 0.0 if clean_scores.size == 0 else float(np.mean(clean_scores)),
-        'attack_score_mean': 0.0 if adv_scores.size == 0 else float(np.mean(adv_scores)),
-    }
-    history_df = pd.DataFrame(history_rows)
-    if not history_df.empty:
-        history_df['is_selected'] = False
-        if 0 <= int(best_idx) < len(history_df):
-            history_df.loc[int(best_idx), 'is_selected'] = True
-    confusion_df = pd.DataFrame([
-        {'subset': 'clean', 'actual': 0, 'predicted': 0, 'count': int(tn)},
-        {'subset': 'clean', 'actual': 0, 'predicted': 1, 'count': int(fp)},
-        {'subset': 'attack', 'actual': 1, 'predicted': 0, 'count': int(fn)},
-        {'subset': 'attack', 'actual': 1, 'predicted': 1, 'count': int(tp)},
-    ])
-    return metrics, history_df, confusion_df
-
-
 def save_dae(model: nn.Module, path: str | Path, *, metadata: Optional[dict[str, Any]] = None) -> Path:
     path = Path(path)
     ensure_dir(path.parent)
@@ -2043,8 +1467,6 @@ def save_dae(model: nn.Module, path: str | Path, *, metadata: Optional[dict[str,
     }
     torch.save(payload, path)
     return path
-
-
 def load_dae(path: str | Path, device: torch.device) -> nn.Module:
     payload = torch.load(Path(path), map_location=device, weights_only=False)
     if payload.get('model_type') != 'gru_vae_dae':
@@ -2059,12 +1481,9 @@ def load_dae(path: str | Path, device: torch.device) -> nn.Module:
 def save_detector(model: nn.Module, path: str | Path, *, threshold: float, metadata: Optional[dict[str, Any]] = None, history: Optional[dict[str, Any]] = None) -> Path:
     path = Path(path)
     ensure_dir(path.parent)
-    if isinstance(model, DetectorGRUVAE):
-        model_type = 'gru_vae_detector'
-    elif isinstance(model, PosteriorBenefitMLPDetector):
-        model_type = 'posterior_mlp_detector'
-    else:
+    if not isinstance(model, PosteriorBenefitMLPDetector):
         raise ValueError(f'Unsupported detector model type for save_detector: {type(model)!r}')
+    model_type = 'posterior_mlp_detector'
     payload = {
         'model_type': model_type,
         'model_config': model.get_config(),
@@ -2080,12 +1499,9 @@ def save_detector(model: nn.Module, path: str | Path, *, threshold: float, metad
 def load_detector(path: str | Path, device: torch.device) -> DetectorArtifact:
     payload = torch.load(Path(path), map_location=device, weights_only=False)
     model_type = payload.get('model_type')
-    if model_type == 'gru_vae_detector':
-        model = DetectorGRUVAE(**dict(payload.get('model_config') or {}))
-    elif model_type == 'posterior_mlp_detector':
-        model = PosteriorBenefitMLPDetector(**dict(payload.get('model_config') or {}))
-    else:
+    if model_type != 'posterior_mlp_detector':
         raise ValueError(f'Unsupported detector artifact type in {path}: {model_type!r}')
+    model = PosteriorBenefitMLPDetector(**dict(payload.get('model_config') or {}))
     model.load_state_dict(payload['state_dict'])
     model.to(device).eval()
     return DetectorArtifact(model=model, threshold=float(payload.get('threshold', 0.0)), metadata=dict(payload.get('metadata') or {}))
